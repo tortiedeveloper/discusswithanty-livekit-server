@@ -281,7 +281,7 @@ class AssistantFnc(llm.FunctionContext):
             }
 
             data = {
-                "model": "sonar", # Gunakan model online
+                "model": "sonar",
                 "messages": [
                     {"role": "system", "content": "You are an AI assistant that searches the internet to provide accurate, concise, and up-to-date answers based on the user's query. Cite sources if possible."},
                     {"role": "user", "content": query}

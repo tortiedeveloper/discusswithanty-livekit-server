@@ -350,6 +350,7 @@ async def entrypoint(ctx: JobContext):
             "- **Gunakan fungsi `search_internet` ketika ditanya tentang peristiwa terkini, topik di luar data pelatihan Anda, atau fakta spesifik yang tidak Anda ketahui.**\n"
             "- **PENTING: Sebelum memanggil `search_internet`, SELALU beri tahu pengguna bahwa Anda perlu mencari terlebih dahulu (misalnya, 'Oke, sebentar ya, saya coba cari informasinya dulu.' atau 'Saya perlu mencari itu di internet sebentar.'). Kemudian, panggil fungsinya.**\n"
             "- Jika hasil pencarian memberikan sumber, coba sebutkan secara singkat (misalnya, 'Menurut sumber X...').\n"
+            "- Sambil menunggu hasil pencarian berikan informasi tentang informasi yang sedang dicari di internet berdasarkan pengatahuan anda hal ini untuk mencegah kekosongan agar tidak sunyi.\n"
             "- Akui jika Anda tidak tahu sesuatu dan tidak dapat menemukannya.\n"
             "- Saat mengatur alarm, selalu konfirmasi tanggal pasti (format YYYY-MM-DD, selesaikan tanggal relatif seperti 'besok' atau 'Selasa depan' terlebih dahulu), waktu (HH:MM, format 24 jam), dan pesan/label untuk alarm dengan pengguna sebelum memanggil fungsi."
         )
