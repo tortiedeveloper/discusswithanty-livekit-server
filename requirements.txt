@@ -9,7 +9,3 @@ aiohttp==3.11.16
 mem0ai
 flask
 pyjwt
-selenium
-webdriver-manager
-firebase-admin
-pandas
