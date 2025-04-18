@@ -42,17 +42,6 @@ if not os.getenv("PERPLEXITY_API_KEY"):
 if not os.getenv("OPENAI_API_KEY"):
     logger.error("FATAL: OPENAI_API_KEY not found.")
 
-mem0_client = None
-try:
-    if api_key := os.getenv("MEM0_API_KEY"):
-        logger.info("Initializing Mem0 Client...")
-        mem0_client = MemoryClient()
-        logger.info("Mem0 Client object created.")
-    else:
-        logger.warning("MEM0_API_KEY not found.")
-except Exception as e:
-    logger.error(f"Failed to initialize Mem0 Client: {e}", exc_info=True)
-
 SEMANTIC_QUERY_GENERAL_STARTUP = (
     "Key points, facts, preferences, user's name, user's recent mood, "
     "and user's recent concerns shared in previous conversations"
@@ -60,20 +49,22 @@ SEMANTIC_QUERY_GENERAL_STARTUP = (
 MEM0_SEARCH_TIMEOUT = 15.0
 LLM_GREETING_TIMEOUT = 10.0
 
-async def search_mem0_with_timeout(user_id: str, query: str, limit: int = 5):
-    if not mem0_client: return None
+async def search_mem0_with_timeout(client: Optional[MemoryClient], user_id: str, query: str, limit: int = 5):
+    if not client:
+        logger.warning(f"Mem0 search skipped for user '{user_id}': client not available.")
+        return None
     try:
         start_time = time.time()
         logger.debug(f"Starting Mem0 search for user '{user_id}' (limit: {limit})")
-        search_coro = asyncio.to_thread(mem0_client.search, user_id=user_id, query=query, limit=limit)
+        search_coro = asyncio.to_thread(client.search, user_id=user_id, query=query, limit=limit)
         result = await asyncio.wait_for(search_coro, timeout=MEM0_SEARCH_TIMEOUT)
         logger.debug(f"Finished Mem0 search in {time.time() - start_time:.2f}s")
         return result
     except asyncio.TimeoutError:
-        logger.warning(f"Mem0 search timed out after {MEM0_SEARCH_TIMEOUT}s")
+        logger.warning(f"Mem0 search timed out after {MEM0_SEARCH_TIMEOUT}s for user '{user_id}'")
         return None
     except Exception as e:
-        logger.error(f"Error during Mem0 search: {e}", exc_info=True)
+        logger.error(f"Error during Mem0 search for user '{user_id}': {e}", exc_info=True)
         return None
 
 async def generate_summary_with_llm(llm_plugin: Optional[llm.LLM], transcript: str) -> str:
@@ -107,6 +98,18 @@ async def entrypoint(ctx: JobContext):
     ephemeral_room_name = ctx.room.name
     job_id = ctx.job.id
     logger.info(f"Initializing agent for ephemeral room: {ephemeral_room_name} (Job ID: {job_id})")
+
+    local_mem0_client = None
+    try:
+        if api_key := os.getenv("MEM0_API_KEY"):
+            logger.info(f"Job {job_id}: Lazily initializing Mem0 Client for this job...")
+            local_mem0_client = MemoryClient()
+            logger.info(f"Job {job_id}: Mem0 Client object created for this job.")
+        else:
+            logger.warning(f"Job {job_id}: MEM0_API_KEY not found, Mem0 features disabled for this job.")
+    except Exception as e:
+        logger.error(f"Job {job_id}: Failed to initialize Mem0 Client for this job: {e}", exc_info=True)
+        local_mem0_client = None
 
     lkapi: Optional[api.LiveKitAPI] = None
     assistant: Optional[VoiceAssistant] = None
@@ -201,16 +204,16 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"Job {job_id}: Using persistent user_id for session: {persistent_user_id}")
 
         logger.info(f"Job {job_id}: Initializing Assistant Function Context...")
-        assistant_fnc = AssistantFnc(client=mem0_client, send_data_callback=send_data_to_client)
-        if mem0_client and persistent_user_id:
+        assistant_fnc = AssistantFnc(client=local_mem0_client, send_data_callback=send_data_to_client)
+        if local_mem0_client and persistent_user_id:
             await assistant_fnc.set_user_id(persistent_user_id)
         logger.info(f"Job {job_id}: Assistant Function Context initialized (without say callback yet).")
 
         retrieved_general_memory_texts = []
         user_name = None
-        if mem0_client and persistent_user_id:
+        if local_mem0_client and persistent_user_id:
             logger.info(f"Job {job_id}: Retrieving general context from Mem0 for user '{persistent_user_id}'...")
-            general_memories = await search_mem0_with_timeout(persistent_user_id, SEMANTIC_QUERY_GENERAL_STARTUP, limit=5)
+            general_memories = await search_mem0_with_timeout(local_mem0_client, persistent_user_id, SEMANTIC_QUERY_GENERAL_STARTUP, limit=5)
             if isinstance(general_memories, list):
                 retrieved_general_memory_texts = [mem.get('memory') for mem in general_memories if isinstance(mem, dict) and mem.get('memory')]
                 logger.info(f"Job {job_id}: Retrieved {len(retrieved_general_memory_texts)} general context memories for user {persistent_user_id}.")

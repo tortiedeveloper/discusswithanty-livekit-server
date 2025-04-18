@@ -21,7 +21,7 @@ DEVICE_ACTION_TIMEOUT = 15.0
 INTERNET_SEARCH_TIMEOUT = 25.0
 
 SendDataCallback = Callable[[str], Awaitable[None]]
-AssistantSayCallback = Callable[[str, bool], Awaitable[None]]
+AssistantSayCallback = Callable[[str], Awaitable[None]]
 
 class AssistantFnc(llm.FunctionContext):
     def __init__(self,
@@ -277,26 +277,21 @@ class AssistantFnc(llm.FunctionContext):
 
         logger.info(f"LLM requests internet search with query: '{query}'")
 
-        # --- MEMBUAT TASK 'SAY' TEPAT SEBELUM REQUEST JARINGAN ---
         say_task = None
         if self._assistant_say_callback:
             filler_message = f"Oke, saya coba cari informasi terbaru tentang '{query[:30]}...' ya."
             logger.info(f"Creating background task to speak filler message: '{filler_message}'")
             try:
-                # Buat task, jangan di-await. Berikan argumen allow_interruptions=True
                 say_task = asyncio.create_task(self._assistant_say_callback(filler_message))
             except Exception as say_err:
                 logger.error(f"Error creating background task for speaking: {say_err}", exc_info=True)
-                # Tetap lanjutkan pencarian meskipun 'say' gagal dibuat tasknya
         else:
             logger.warning("Assistant 'say' callback not available, cannot speak filler message concurrently.")
-        # --- AKHIR PEMBUATAN TASK 'SAY' ---
 
         try:
             perplexity_api_key = os.environ.get('PERPLEXITY_API_KEY')
             if not perplexity_api_key:
                 logger.error("PERPLEXITY_API_KEY not found in environment variables.")
-                # Jika task 'say' dibuat, kita mungkin ingin membatalkannya jika terjadi error awal
                 if say_task and not say_task.done():
                     say_task.cancel()
                 return "Maaf, saya tidak dapat melakukan pencarian internet saat ini karena konfigurasi API Key belum diatur."
@@ -316,7 +311,6 @@ class AssistantFnc(llm.FunctionContext):
 
             logger.debug(f"Making request to Perplexity API (sonar-medium-online) with data: {json.dumps(data)}")
 
-            # --- REQUEST JARINGAN BERJALAN, TASK 'SAY' BERJALAN DI BACKGROUND ---
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                         "https://api.perplexity.ai/chat/completions",
@@ -326,7 +320,6 @@ class AssistantFnc(llm.FunctionContext):
                 ) as response:
                     logger.debug(f"Perplexity API response status: {response.status}")
 
-                    # --- PROSES RESPONSE SETELAH REQUEST SELESAI ---
                     if response.status == 200:
                         result = await response.json()
                         logger.debug(f"Successfully received response from Perplexity API: {json.dumps(result)[:200]}...")
@@ -335,7 +328,6 @@ class AssistantFnc(llm.FunctionContext):
                            "message" in result["choices"][0] and "content" in result["choices"][0]["message"]:
                             content = result["choices"][0]["message"]["content"]
                             logger.info(f"Internet search successful for query: '{query}'. Result length: {len(content)}")
-                            # Task 'say' mungkin masih berjalan atau sudah selesai, tidak masalah.
                             return content
                         else:
                             logger.error(f"Unexpected response structure from Perplexity: {json.dumps(result)}")
@@ -352,7 +344,6 @@ class AssistantFnc(llm.FunctionContext):
 
         except asyncio.TimeoutError:
              logger.error(f"Internet search timed out after {INTERNET_SEARCH_TIMEOUT}s for query: '{query}'")
-             # Batalkan task 'say' jika masih berjalan saat timeout
              if say_task and not say_task.done():
                  say_task.cancel()
              return "Maaf, pencarian informasi memakan waktu terlalu lama. Silakan coba lagi."
