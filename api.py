@@ -21,15 +21,24 @@ DEVICE_ACTION_TIMEOUT = 15.0
 INTERNET_SEARCH_TIMEOUT = 25.0
 
 SendDataCallback = Callable[[str], Awaitable[None]]
+AssistantSayCallback = Callable[[str, bool], Awaitable[None]]
 
 class AssistantFnc(llm.FunctionContext):
-    def __init__(self, client, send_data_callback: Optional[SendDataCallback] = None) -> None:
+    def __init__(self,
+                 client,
+                 send_data_callback: Optional[SendDataCallback] = None
+                 ) -> None:
         super().__init__()
         self._mem0_client = client
         self._send_data_callback = send_data_callback
+        self._assistant_say_callback: Optional[AssistantSayCallback] = None
         self._current_user_id: Optional[str] = None
         self._user_name: Optional[str] = None
-        logger.info(f"AssistantFnc initialized. Mem0 Client provided: {client is not None}. Send data callback provided: {send_data_callback is not None}")
+        logger.info(f"AssistantFnc initialized. Mem0: {client is not None}, SendData: {send_data_callback is not None}")
+
+    def set_assistant_say_callback(self, say_callback: AssistantSayCallback):
+        self._assistant_say_callback = say_callback
+        logger.info("Assistant 'say' callback has been set in AssistantFnc.")
 
     async def set_user_id(self, user_id: str):
         if not user_id:
@@ -255,11 +264,11 @@ class AssistantFnc(llm.FunctionContext):
             logger.error(f"Failed to send 'set_alarm' command via callback for user {self._current_user_id}: {e}", exc_info=True)
             return "Maaf, terjadi kesalahan teknis saat mencoba mengirim perintah alarm."
 
-    @llm.ai_callable(description="Search the internet for up-to-date information, current events, facts, or topics unknown to the assistant. Use this when you lack the necessary information or need current data.")
+    @llm.ai_callable(description="Search the internet for up-to-date information...")
     async def search_internet(
             self,
             query: Annotated[
-                str, llm.TypeInfo(description="The specific search query to look up information on the internet.")
+                str, llm.TypeInfo(description="The specific search query...")
             ]
     ):
         if not query or not query.strip():
@@ -268,10 +277,28 @@ class AssistantFnc(llm.FunctionContext):
 
         logger.info(f"LLM requests internet search with query: '{query}'")
 
+        # --- MEMBUAT TASK 'SAY' TEPAT SEBELUM REQUEST JARINGAN ---
+        say_task = None
+        if self._assistant_say_callback:
+            filler_message = f"Oke, saya coba cari informasi terbaru tentang '{query[:30]}...' ya."
+            logger.info(f"Creating background task to speak filler message: '{filler_message}'")
+            try:
+                # Buat task, jangan di-await. Berikan argumen allow_interruptions=True
+                say_task = asyncio.create_task(self._assistant_say_callback(filler_message))
+            except Exception as say_err:
+                logger.error(f"Error creating background task for speaking: {say_err}", exc_info=True)
+                # Tetap lanjutkan pencarian meskipun 'say' gagal dibuat tasknya
+        else:
+            logger.warning("Assistant 'say' callback not available, cannot speak filler message concurrently.")
+        # --- AKHIR PEMBUATAN TASK 'SAY' ---
+
         try:
             perplexity_api_key = os.environ.get('PERPLEXITY_API_KEY')
             if not perplexity_api_key:
                 logger.error("PERPLEXITY_API_KEY not found in environment variables.")
+                # Jika task 'say' dibuat, kita mungkin ingin membatalkannya jika terjadi error awal
+                if say_task and not say_task.done():
+                    say_task.cancel()
                 return "Maaf, saya tidak dapat melakukan pencarian internet saat ini karena konfigurasi API Key belum diatur."
 
             headers = {
@@ -279,7 +306,6 @@ class AssistantFnc(llm.FunctionContext):
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             }
-
             data = {
                 "model": "sonar",
                 "messages": [
@@ -290,6 +316,7 @@ class AssistantFnc(llm.FunctionContext):
 
             logger.debug(f"Making request to Perplexity API (sonar-medium-online) with data: {json.dumps(data)}")
 
+            # --- REQUEST JARINGAN BERJALAN, TASK 'SAY' BERJALAN DI BACKGROUND ---
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                         "https://api.perplexity.ai/chat/completions",
@@ -299,6 +326,7 @@ class AssistantFnc(llm.FunctionContext):
                 ) as response:
                     logger.debug(f"Perplexity API response status: {response.status}")
 
+                    # --- PROSES RESPONSE SETELAH REQUEST SELESAI ---
                     if response.status == 200:
                         result = await response.json()
                         logger.debug(f"Successfully received response from Perplexity API: {json.dumps(result)[:200]}...")
@@ -307,6 +335,7 @@ class AssistantFnc(llm.FunctionContext):
                            "message" in result["choices"][0] and "content" in result["choices"][0]["message"]:
                             content = result["choices"][0]["message"]["content"]
                             logger.info(f"Internet search successful for query: '{query}'. Result length: {len(content)}")
+                            # Task 'say' mungkin masih berjalan atau sudah selesai, tidak masalah.
                             return content
                         else:
                             logger.error(f"Unexpected response structure from Perplexity: {json.dumps(result)}")
@@ -323,11 +352,18 @@ class AssistantFnc(llm.FunctionContext):
 
         except asyncio.TimeoutError:
              logger.error(f"Internet search timed out after {INTERNET_SEARCH_TIMEOUT}s for query: '{query}'")
+             # Batalkan task 'say' jika masih berjalan saat timeout
+             if say_task and not say_task.done():
+                 say_task.cancel()
              return "Maaf, pencarian informasi memakan waktu terlalu lama. Silakan coba lagi."
         except aiohttp.ClientError as e:
              logger.error(f"Network error during internet search: {e}", exc_info=True)
+             if say_task and not say_task.done():
+                 say_task.cancel()
              return "Maaf, terjadi masalah jaringan saat mencoba mencari informasi."
         except Exception as e:
             error_details = traceback.format_exc()
             logger.error(f"Exception in search_internet: {str(e)}\n{error_details}")
+            if say_task and not say_task.done():
+                 say_task.cancel()
             return f"Maaf, terjadi kesalahan tak terduga saat mencoba melakukan pencarian: {str(e)}"
